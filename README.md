@@ -17,6 +17,7 @@
 
 如果您熟悉中文，可以[阅读中文版本的README](./README_CN.md)
 ## 📢 Latest Updates
+**[March 2026]** **LHM++ is now open-sourced!** Supports arbitrary view inputs with higher efficiency—8-view input runs on just 8GB GPU memory—and superior rendering quality. See [GitHub](https://github.com/aigc3d/LHM-plusplus) | [arXiv](https://arxiv.org/abs/2506.13766) <br>
 **[June 26, 2025]** LHM is got accepted by ICCV2025!!! <br>
 **[April 16, 2025]** We have released a memory-saving version of motion and LHM. Now you can run the entire pipeline on 14 GB GPUs. <br>
 **[April 13, 2025]** We have released LHM-MINI, which allows you to run LHM on 16 GB GPUs. 🔥🔥🔥 <br>
@@ -296,6 +297,7 @@ We would like to express our sincere gratitude to [站长推荐推荐](https://s
 
 ## More Works
 Welcome to follow our team other interesting works:
+- [LHM++](https://github.com/aigc3d/LHM-plusplus)
 - [AniGS](https://github.com/aigc3d/AniGS)
 - [LAM](https://github.com/aigc3d/LAM)
 

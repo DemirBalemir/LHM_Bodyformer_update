@@ -15,6 +15,7 @@
 </p>
 
 ## 📢 最新动态
+**[2026年3月]** 我们的新工作 **LHM++** 已开源！支持任意视角输入，效率更高，8GB 显存即可运行 8 图输入，渲染质量更优。详见 [GitHub](https://github.com/aigc3d/LHM-plusplus) | [arXiv](https://arxiv.org/abs/2506.13766)。<br>
 **[2025年4月16日]** 我们开源了更节省内存的LHM 全流程 gradio， 更多细节可以看我们的模型卡!!!<br>
 **[2025年4月13日]** 我们开源了LHM-MINI 版本，现在你可以在16GB的机器上跑LHM了！<br>
 **[2025年4月10日]** 我们开源了独立的运动提取节点和动画推理节点，利用已经提取好的运动参数，动画推理节点可以在20s内产生10s的视频!!! 参考[ComfyUI](https://github.com/aigc3d/LHM/tree/feat/comfyui) 更新你的节点！<br>
@@ -269,6 +270,7 @@ python ./tools/metrics/compute_ssim_lpips.py -f1 ${gt_folder} -f2 ${results_fold
 
 ## 更多工作 
 欢迎使用我们团队更多有趣的工作:
+- [LHM++](https://github.com/aigc3d/LHM-plusplus)
 - [AniGS](https://github.com/aigc3d/AniGS)
 - [LAM](https://github.com/aigc3d/LAM)
 
