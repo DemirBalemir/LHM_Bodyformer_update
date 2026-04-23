@@ -206,7 +206,7 @@ class SapiensWrapper(nn.Module):
         for name, param in self.model.named_parameters():
             param.requires_grad = False
 
-    @torch.compile
+    
     def forward(self, image: torch.Tensor, mod: torch.Tensor = None):
         # image: [N, C, H, W]
         # mod: [N, D] or None

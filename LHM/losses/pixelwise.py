@@ -37,7 +37,7 @@ class PixelLoss(nn.Module):
         else:
             raise NotImplementedError(f'Unknown pixel loss option: {option}')
 
-    @torch.compile
+    
     def forward(self, x, y):
         """
         Assume images are channel first.

@@ -70,7 +70,7 @@ class Dinov2UnetWrapper(nn.Module):
         model = model_fn(modulation_dim=modulation_dim, pretrained=pretrained)
         return model
 
-    @torch.compile
+    
     def forward(self, image: torch.Tensor, mod: torch.Tensor = None):
         # image: [N, C, H, W]
         # mod: [N, D] or None

@@ -32,7 +32,7 @@ class DinoWrapper(nn.Module):
         if freeze:
             self._freeze()
 
-    @torch.compile
+    
     def forward_model(self, inputs):
         return self.model(**inputs, interpolate_pos_encoding=True)
 

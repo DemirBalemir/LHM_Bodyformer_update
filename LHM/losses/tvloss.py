@@ -30,7 +30,7 @@ class TVLoss(nn.Module):
     def numel_excluding_first_dim(self, x):
         return x.numel() // x.shape[0]
 
-    @torch.compile
+    
     def forward(self, x):
         """
         Assume batched and channel first with inner sizes.
