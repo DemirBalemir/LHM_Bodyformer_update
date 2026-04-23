@@ -358,6 +358,7 @@ class HumanLRMInferrer(Inferrer):
         super().__init__()
 
         self.cfg, cfg_train = parse_configs()
+        self.infer_dtype = torch.float16 if self.cfg.get("fp16", False) else torch.float32
 
         configure_logger(
             stream_level=self.cfg.logger,
@@ -513,20 +514,82 @@ class HumanLRMInferrer(Inferrer):
     def infer_mesh(
         self,
         image_path: str,
-        dump_tmp_dir: str,  
+        dump_tmp_dir: str,
         dump_mesh_dir: str,
         shape_param=None,
+        extra_image_paths: list = None,  # additional view images (side/back/etc.)
     ):
-
         source_size = self.cfg.source_size
         aspect_standard = 5.0 / 3
 
-        parsing_mask = self.parsing(image_path)
+        image, src_head_rgb = self._preprocess_one_image(image_path, source_size, aspect_standard)
 
-        # prepare reference image
+        # save masked image for vis
+        save_ref_img_path = os.path.join(
+            dump_tmp_dir, "refer_" + os.path.basename(image_path)
+        )
+        vis_ref_img = (image[0].permute(1, 2, 0).cpu().detach().numpy() * 255).astype(np.uint8)
+        Image.fromarray(vis_ref_img).save(save_ref_img_path)
+
+        # stack all views: [1, N, C, H, W]
+        all_images = [image]
+        all_heads  = [src_head_rgb]
+        for extra_path in (extra_image_paths or []):
+            extra_img, extra_head = self._preprocess_one_image(extra_path, source_size, aspect_standard)
+            all_images.append(extra_img)
+            all_heads.append(extra_head)
+
+        stacked_images = torch.stack([img.squeeze(0) for img in all_images], dim=0).unsqueeze(0)
+        stacked_heads  = torch.stack([h.squeeze(0)   for h   in all_heads],  dim=0).unsqueeze(0)
+
+        device = "cuda"
+        dtype = self.infer_dtype
+        shape_param = torch.tensor(shape_param, dtype=dtype).unsqueeze(0)
+
+        smplx_params = dict()
+        smplx_params['betas']      = shape_param.to(device)
+        smplx_params['root_pose']  = torch.zeros(1, 1, 3).to(device)
+        smplx_params['body_pose']  = torch.zeros(1, 1, 21, 3).to(device)
+        smplx_params['jaw_pose']   = torch.zeros(1, 1, 3).to(device)
+        smplx_params['leye_pose']  = torch.zeros(1, 1, 3).to(device)
+        smplx_params['reye_pose']  = torch.zeros(1, 1, 3).to(device)
+        smplx_params['lhand_pose'] = torch.zeros(1, 1, 15, 3).to(device)
+        smplx_params['rhand_pose'] = torch.zeros(1, 1, 15, 3).to(device)
+        smplx_params['expr']       = torch.zeros(1, 1, 100).to(device)
+        smplx_params['trans']      = torch.zeros(1, 1, 3).to(device)
+
+        self.model.to(dtype)
+
+        gs_app_model_list, query_points, transform_mat_neutral_pose = self.model.infer_single_view(
+            stacked_images.to(device, dtype),
+            stacked_heads.to(device, dtype),
+            None, None, None, None, None,
+            smplx_params={k: v.to(device) for k, v in smplx_params.items()},
+        )
+        smplx_params['transform_mat_neutral_pose'] = transform_mat_neutral_pose
+
+        output_gs = self.model.animation_infer_gs(gs_app_model_list, query_points, smplx_params)
+
+        output_gs_path = '_'.join(os.path.basename(image_path).split('.')[:-1]) + '.ply'
+        print(f"save mesh to {os.path.join(dump_mesh_dir, output_gs_path)}")
+        output_gs.save_ply(os.path.join(dump_mesh_dir, output_gs_path))
+
+
+    def _preprocess_one_image(self, image_path, source_size, aspect_standard):
+        """Segment, crop, and normalise a single reference image.
+
+        Returns (image_tensor [1,C,H,W], head_tensor [1,C,H',W']).
+        """
+        if self.parsingnet is not None:
+            mask = self.parsing(image_path)
+        else:
+            img_np = cv2.imread(image_path)
+            remove_np = remove(img_np)
+            mask = remove_np[..., 3]
+
         image, _, _ = infer_preprocess_image(
             image_path,
-            mask=parsing_mask,
+            mask=mask,
             intr=None,
             pad_ratio=0,
             bg_color=1.0,
@@ -537,79 +600,23 @@ class HumanLRMInferrer(Inferrer):
             multiply=14,
             need_mask=True,
         )
-        try:
-            src_head_rgb = self.crop_face_image(image_path)
-        except:
-            print("w/o head input!")
-            src_head_rgb = np.zeros((112, 112, 3), dtype=np.uint8)
-
 
         try:
-            src_head_rgb = cv2.resize(
-                src_head_rgb,
+            head_rgb = self.crop_face_image(image_path)
+            head_rgb = cv2.resize(
+                head_rgb,
                 dsize=(self.cfg.src_head_size, self.cfg.src_head_size),
                 interpolation=cv2.INTER_AREA,
-            )  # resize to dino size
-        except:
-            src_head_rgb = np.zeros(
+            )
+        except Exception:
+            head_rgb = np.zeros(
                 (self.cfg.src_head_size, self.cfg.src_head_size, 3), dtype=np.uint8
             )
-        
 
-        src_head_rgb = (
-            torch.from_numpy(src_head_rgb / 255.0).float().permute(2, 0, 1).unsqueeze(0)
-        )  # [1, 3, H, W]
-
-        # save masked image for vis
-        save_ref_img_path = os.path.join(
-            dump_tmp_dir, "refer_" + os.path.basename(image_path)
-        )
-        vis_ref_img = (image[0].permute(1, 2, 0).cpu().detach().numpy() * 255).astype(
-            np.uint8
-        )
-        Image.fromarray(vis_ref_img).save(save_ref_img_path)
-
-        device = "cuda"
-        dtype = torch.float32
-        shape_param = torch.tensor(shape_param, dtype=dtype).unsqueeze(0)
-
-        smplx_params =  dict()
-        # cano pose setting
-        smplx_params['betas'] = shape_param.to(device)
-
-        smplx_params['root_pose'] = torch.zeros(1,1,3).to(device)
-        smplx_params['body_pose'] = torch.zeros(1,1,21, 3).to(device)
-        smplx_params['jaw_pose'] = torch.zeros(1, 1, 3).to(device)
-        smplx_params['leye_pose'] = torch.zeros(1, 1, 3).to(device)
-        smplx_params['reye_pose'] = torch.zeros(1, 1, 3).to(device)
-        smplx_params['lhand_pose'] = torch.zeros(1, 1, 15, 3).to(device)
-        smplx_params['rhand_pose'] = torch.zeros(1, 1, 15, 3).to(device)
-        smplx_params['expr'] = torch.zeros(1, 1, 100).to(device)
-        smplx_params['trans'] = torch.zeros(1, 1, 3).to(device)
-
-        self.model.to(dtype)
-
-        gs_app_model_list, query_points, transform_mat_neutral_pose = self.model.infer_single_view(
-            image.unsqueeze(0).to(device, dtype),
-            src_head_rgb.unsqueeze(0).to(device, dtype),
-            None,
-            None,
-            None,
-            None,
-            None,
-            smplx_params={
-                k: v.to(device) for k, v in smplx_params.items()
-            },
-        )
-        smplx_params['transform_mat_neutral_pose'] = transform_mat_neutral_pose
-
-        output_gs = self.model.animation_infer_gs(gs_app_model_list, query_points, smplx_params)
-
-        output_gs_path = '_'.join(os.path.basename(image_path).split('.')[:-1])+'.ply'
-
-        print(f"save mesh to {os.path.join(dump_mesh_dir, output_gs_path)}")
-        output_gs.save_ply(os.path.join(dump_mesh_dir, output_gs_path))
-
+        head_tensor = (
+            torch.from_numpy(head_rgb / 255.0).float().permute(2, 0, 1).unsqueeze(0)
+        )  # [1, 3, H', W']
+        return image, head_tensor
 
     def infer_single(
         self,
@@ -623,6 +630,7 @@ class HumanLRMInferrer(Inferrer):
         dump_image_dir: str,
         dump_video_path: str,
         shape_param=None,
+        extra_image_paths: list = None,  # additional view images (side/back/etc.)
     ):
 
         source_size = self.cfg.source_size
@@ -638,49 +646,8 @@ class HumanLRMInferrer(Inferrer):
         vis_motion = self.cfg.get("vis_motion", False)  # False
 
 
-        if self.parsingnet is not None:
-            parsing_mask = self.parsing(image_path)
-        else:
-            img_np = cv2.imread(image_path)
-            remove_np = remove(img_np)
-            parsing_mask = remove_np[...,3]
-        
-
-        # prepare reference image
-        image, _, _ = infer_preprocess_image(
-            image_path,
-            mask=parsing_mask,
-            intr=None,
-            pad_ratio=0,
-            bg_color=1.0,
-            max_tgt_size=896,
-            aspect_standard=aspect_standard,
-            enlarge_ratio=[1.0, 1.0],
-            render_tgt_size=source_size,
-            multiply=14,
-            need_mask=True,
-        )
-        try:
-            src_head_rgb = self.crop_face_image(image_path)
-        except:
-            print("w/o head input!")
-            src_head_rgb = np.zeros((112, 112, 3), dtype=np.uint8)
-
-
-        try:
-            src_head_rgb = cv2.resize(
-                src_head_rgb,
-                dsize=(self.cfg.src_head_size, self.cfg.src_head_size),
-                interpolation=cv2.INTER_AREA,
-            )  # resize to dino size
-        except:
-            src_head_rgb = np.zeros(
-                (self.cfg.src_head_size, self.cfg.src_head_size, 3), dtype=np.uint8
-            )
-
-        src_head_rgb = (
-            torch.from_numpy(src_head_rgb / 255.0).float().permute(2, 0, 1).unsqueeze(0)
-        )  # [1, 3, H, W]
+        # preprocess front/primary image
+        image, src_head_rgb = self._preprocess_one_image(image_path, source_size, aspect_standard)
 
         # save masked image for vis
         save_ref_img_path = os.path.join(
@@ -690,6 +657,14 @@ class HumanLRMInferrer(Inferrer):
             np.uint8
         )
         Image.fromarray(vis_ref_img).save(save_ref_img_path)
+
+        # stack all views: [1, N, C, H, W]
+        all_images = [image]          # each is [1, C, H, W]
+        all_heads  = [src_head_rgb]   # each is [1, C, H', W']
+        for extra_path in (extra_image_paths or []):
+            extra_img, extra_head = self._preprocess_one_image(extra_path, source_size, aspect_standard)
+            all_images.append(extra_img)
+            all_heads.append(extra_head)
 
         # read motion seq
 
@@ -719,15 +694,20 @@ class HumanLRMInferrer(Inferrer):
         camera_size = len(motion_seq["motion_seqs"])
 
         device = "cuda"
-        dtype = torch.float32
+        dtype = self.infer_dtype
         shape_param = torch.tensor(shape_param, dtype=dtype).unsqueeze(0)
 
         self.model.to(dtype)
         smplx_params = motion_seq['smplx_params']
         smplx_params['betas'] = shape_param.to(device)
+
+        # build [1, N_views, C, H, W] tensors
+        stacked_images = torch.stack([img.squeeze(0) for img in all_images], dim=0).unsqueeze(0)
+        stacked_heads  = torch.stack([h.squeeze(0)   for h   in all_heads],  dim=0).unsqueeze(0)
+
         gs_model_list, query_points, transform_mat_neutral_pose = self.model.infer_single_view(
-            image.unsqueeze(0).to(device, dtype),
-            src_head_rgb.unsqueeze(0).to(device, dtype),
+            stacked_images.to(device, dtype),
+            stacked_heads.to(device, dtype),
             None,
             None,
             render_c2ws=motion_seq["render_c2ws"].to(device),
@@ -999,7 +979,7 @@ class HumanLRMVideoInferrer(HumanLRMInferrer):
         motion_seqs = motion_seq["motion_seqs"]
 
         device = "cuda"
-        dtype = torch.float32
+        dtype = self.infer_dtype
         self.model.to(dtype)
 
 

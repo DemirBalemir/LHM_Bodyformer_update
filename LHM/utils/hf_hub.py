@@ -22,4 +22,10 @@ def wrap_model_hub(model_cls: nn.Module):
         def __init__(self, config: dict):
             super().__init__(**config)
             self.config = config
+
+        @classmethod
+        def _from_pretrained(cls, *, strict=False, **kwargs):
+            # strict=False so newly added parameters (e.g. view_angle_embed)
+            # keep their initialised values when not present in the checkpoint
+            return super()._from_pretrained(strict=strict, **kwargs)
     return HfModel

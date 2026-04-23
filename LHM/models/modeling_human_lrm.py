@@ -551,6 +551,13 @@ class ModelHumanLRMSapdinoBodyHeadSD3_5(ModelHumanLRM):
             linear(mid_dim, pcl_dim * 2),
         )
 
+        # view-conditioned attention: learned per-view offset added to feature tokens
+        # zero-initialized so single-view inference (view 0) is identical to the pretrained model
+        max_input_views = kwargs.get("max_input_views", 6)
+        self.max_input_views = max_input_views
+        self.view_angle_embed = nn.Embedding(max_input_views, fine_encoder_feat_dim)
+        nn.init.zeros_(self.view_angle_embed.weight)
+
     def build_transformer(
         self,
         transformer_type,
@@ -663,26 +670,24 @@ class ModelHumanLRMSapdinoBodyHeadSD3_5(ModelHumanLRM):
 
         return motion_tokens
 
-    @torch.compile
-    def forward_latent_points(self, image, head_image, camera, query_points=None):
+    def forward_latent_points(self, images, head_images, camera, query_points=None):
         """
         Forward pass of the latent points generation.
         Args:
-            image (torch.Tensor): Input image tensor of shape [B, C_img, H_img, W_img].
-            head_image (torch.Tensor): Input head image tensor of shape [B, C_img, H_img, W_img].
+            images (torch.Tensor): [B, C, H, W] or [B, N, C, H, W] for N input views.
+            head_images (torch.Tensor): [B, C, H, W] or [B, N, C, H, W].
             camera (torch.Tensor): Camera tensor of shape [B, D_cam_raw].
             query_points (torch.Tensor, optional): Query points tensor. for example, smplx surface points, Defaults to None.
         Returns:
             torch.Tensor: Generated tokens tensor.
-            torch.Tensor: Encoded image features tensor.
+            torch.Tensor: Encoded image features tensor (first view).
         """
 
-        B = image.shape[0]
+        B = images.shape[0]
 
-        # encode image
-        # image_feats is cond texture
+        # encode image — handles single [B,C,H,W] or multi-view [B,N,C,H,W]
         image_feats, head_feats, body_feats = self.forward_encode_image(
-            image, head_image
+            images, head_images
         )
 
         motion_tokens = self.forward_moitonembed(body_feats)
@@ -728,21 +733,38 @@ class ModelHumanLRMSapdinoBodyHeadSD3_5(ModelHumanLRM):
             image_feats = self.fine_encoder(image)
         return image_feats
 
-    def forward_encode_image(self, image, head_image):
-        # encode image
+    def forward_encode_image(self, images, head_images):
+        # images:      [B, C, H, W]  (single-view) or [B, N, C, H, W] (multi-view)
+        # head_images: [B, C, H, W]  (single-view) or [B, N, C, H, W] (multi-view)
+        if images.dim() == 4:
+            images = images.unsqueeze(1)
+            head_images = head_images.unsqueeze(1)
 
-        body_embed = self.forward_fine_encode_image(image)  # 4096 tokens
-        head_embed = super(ModelHumanLRMSapdinoBodyHeadSD3_5, self).forward_encode_image(
-            head_image
-        )  # 1024 tokens
+        N = images.shape[1]
+        all_view_tokens = []
+        first_body_embed = None
+        first_head_embed = None
 
-        head_embed = F.pad(
-            head_embed, (0, body_embed.shape[-1] - head_embed.shape[-1], 0, 0, 0, 0)
-        )  # the same as sd3, learnable
+        for v in range(N):
+            body_embed = self.forward_fine_encode_image(images[:, v])  # [B, L_body, D]
+            head_embed = super(ModelHumanLRMSapdinoBodyHeadSD3_5, self).forward_encode_image(
+                head_images[:, v]
+            )  # [B, L_head, d]
+            head_embed = F.pad(
+                head_embed, (0, body_embed.shape[-1] - head_embed.shape[-1], 0, 0, 0, 0)
+            )
 
-        merge_tokens = torch.cat([body_embed, head_embed], dim=1)
+            if v == 0:
+                first_body_embed = body_embed
+                first_head_embed = head_embed
 
-        return merge_tokens, head_embed, body_embed
+            view_tokens = torch.cat([body_embed, head_embed], dim=1)  # [B, L_body+L_head, D]
+            view_idx = torch.tensor([v], device=images.device, dtype=torch.long)
+            view_tokens = view_tokens + self.view_angle_embed(view_idx).unsqueeze(0)
+            all_view_tokens.append(view_tokens)
+
+        merge_tokens = torch.cat(all_view_tokens, dim=1)  # [B, N*(L_body+L_head), D]
+        return merge_tokens, first_head_embed, first_body_embed
 
     @torch.no_grad()
     def infer_single_view(
@@ -769,9 +791,10 @@ class ModelHumanLRMSapdinoBodyHeadSD3_5(ModelHumanLRM):
                 smplx_params, device=image.device
             )
 
+        # pass all N views; forward_latent_points handles [B,N,C,H,W]
         latent_points, image_feats = self.forward_latent_points(
-            image[:, 0], head_image[:, 0], camera=None, query_points=query_points
-        )  # [B, N, C]
+            image, head_image, camera=None, query_points=query_points
+        )  # [B, N_pts, C]
 
         self.renderer.hyper_step(10000000)  # set to max step
 
