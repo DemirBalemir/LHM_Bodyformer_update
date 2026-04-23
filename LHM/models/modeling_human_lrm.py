@@ -306,7 +306,6 @@ class ModelHumanLRM(nn.Module):
             image_feats = self.encoder(image)
         return image_feats
 
-    @torch.compile
     def forward_latent_points(self, image, camera, query_points=None):
         """
         Forward pass of the latent points generation.
